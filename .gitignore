@@ -1,25 +1,4 @@
-# Build artifacts — architecture-specific, never commit.
-# Your laptop is x86_64, the Pi is aarch64; a binary from one
-# is meaningless on the other. Each machine builds its own.
 build/
 *.o
-*.d
-meteord
-
-# Runtime output
-*.log
 *.db
-*.db-journal
-*.db-wal
-
-# Real config (may hold the backend URL/port). Commit the .example instead.
-config/meteor.conf
-
-# Captured IQ sample files — large and binary
-*.iq
-*.bin
-
-# Editor noise
-.vscode/
-*.swp
-*~
+*.log
