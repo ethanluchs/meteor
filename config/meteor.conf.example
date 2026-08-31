@@ -1,0 +1,33 @@
+# meteor detector configuration
+# Copy to meteor.conf and edit. Lines starting with # are comments.
+
+# --- Radio ---
+# Center frequency in Hz. Common forward-scatter beacons:
+#   GRAVES (France)  143.050 MHz
+#   BRAMS (Belgium)  49.970 MHz
+center_freq_hz = 143050000
+
+# Sample rate in Hz. 2048000 is a safe RTL-SDR default.
+sample_rate_hz = 2048000
+
+# Tuner gain in tenths of a dB; -1 means automatic.
+gain_tenth_db = -1
+
+# --- Detection ---
+# Power threshold above noise floor for a sample to count as a hit.
+detection_threshold = 12.0
+
+# An event must stay above threshold at least this long to be real.
+# Filters out impulse noise, which is the dominant false positive.
+min_event_duration_ms = 80
+
+# Ignore anything longer than this (likely aircraft or interference).
+max_event_duration_ms = 15000
+
+# --- Storage ---
+db_path = /var/lib/meteor/events.db
+log_path = /var/log/meteor/meteor.log
+
+# --- Backend notification ---
+backend_url = http://localhost:3000/api/event
+http_timeout_ms = 5000
