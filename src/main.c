@@ -11,7 +11,7 @@ int main(void) {
     return 1;
   }
   rtlsdr_set_sample_rate(dev, 2048000);
-  rtlsdr_set_center_freq(dev, 98000000);
+  rtlsdr_set_center_freq(dev, 88500000);
   rtlsdr_set_tuner_gain_mode(dev, 1);
   rtlsdr_reset_buffer(dev);
   uint8_t buf[16384];
