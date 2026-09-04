@@ -1,6 +1,6 @@
 CC := gcc
 CFLAGS := -Wall -Wextra -std=c11 -Iinclude
-LDFLAGS := $(shell pkg-config --libs librtlsdr sqlite3 libcurl)
+LDFLAGS := $(shell pkg-config --libs librtlsdr sqlite3 libcurl) -lm
 CFLAGS += $(shell pkg-config --cflags librtlsdr sqlite3 libcurl)
 
 SRC := $(wildcard src/*.c)
