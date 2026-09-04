@@ -28,7 +28,6 @@ int main(void) {
     rtlsdr_read_sync(dev, buf, sizeof(buf), &n_read);
 
     for (int i = 0; i + 1 < n_read; i += 2) {
-      printf("%x%x", buf[i], buf[i + 1]);
       float i_val = (float)buf[i] - 127.5f;
       float q_val = (float)buf[i + 1] - 127.5f;
       float magnitude = sqrtf(i_val * i_val + q_val * q_val);
