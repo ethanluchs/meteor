@@ -6,7 +6,9 @@
 
 int main(void) {
 
+  // pointer to handle to deal with rtlsdr device
   rtlsdr_dev_t *dev;
+  // opens rtlsdr device. now dev is a pointer to the device.
   int status = rtlsdr_open(&dev, 0);
   time_t start = time(NULL);
   float baseline = 0;
@@ -28,19 +30,23 @@ int main(void) {
   uint8_t buf[16384];
   int n_read;
 
-  while (time(NULL) - start < 900) {
+  while (time(NULL) - start < 7200) {
     rtlsdr_read_sync(dev, buf, sizeof(buf), &n_read);
 
+    // loop over every single byte read
     for (int i = 0; i + 1 < n_read; i += 2) {
+
       float i_val = (float)buf[i] - 127.5f;
       float q_val = (float)buf[i + 1] - 127.5f;
       float magnitude = sqrtf(i_val * i_val + q_val * q_val);
+
       if (!baseline_initialized) {
         baseline = magnitude;
         baseline_initialized = 1;
       } else {
         baseline = alpha * magnitude + (1 - alpha) * baseline;
       }
+
       sample_count++;
       if (sample_count > warmup_samples && magnitude > baseline * 5.0f) {
         consecutive_above++;
