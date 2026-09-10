@@ -12,6 +12,10 @@ int main(void) {
   float baseline = 0;
   int baseline_initialized = 0;
   float alpha = 0.01f;
+  int consecutive_above = 0;
+  const int min_consecutive = 102400;
+  long sample_count = 0;
+  const long warmup_samples = 10000;
 
   if (status != 0) {
     fprintf(stderr, "Failed to open device\n");
@@ -37,10 +41,15 @@ int main(void) {
       } else {
         baseline = alpha * magnitude + (1 - alpha) * baseline;
       }
-
-      if (baseline_initialized && magnitude > baseline * 5.0f) {
-        printf("Possible detection: magnitude=%.2f baseline=%.2f\n", magnitude,
-               baseline);
+      sample_count++;
+      if (sample_count > warmup_samples && magnitude > baseline * 5.0f) {
+        consecutive_above++;
+        if (consecutive_above == min_consecutive) {
+          printf("[%ld] Possible Detection: magnitude=%.2f baseline=%.2f\n",
+                 (long)time(NULL), magnitude, baseline);
+        }
+      } else {
+        consecutive_above = 0;
       }
     }
   }
