@@ -1,5 +1,5 @@
 CC := gcc
-CFLAGS := -Wall -Wextra -std=c11 -Iinclude
+CFLAGS := -Wall -Wextra -std=gnu11 -Iinclude
 LDFLAGS := $(shell pkg-config --libs librtlsdr sqlite3 libcurl) -lm
 CFLAGS += $(shell pkg-config --cflags librtlsdr sqlite3 libcurl)
 
