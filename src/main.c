@@ -8,6 +8,7 @@
 #include <time.h>
 
 #define SAMPLE_RATE 250000
+#define CENTER_FREQ 88480000
 
 // tuned 20 kHz low so the carrier of interest lands clear of the DC spike
 // that sits at the center frequency
