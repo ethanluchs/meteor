@@ -12,7 +12,6 @@
 
 // tuned 20 kHz low so the carrier of interest lands clear of the DC spike
 // that sits at the center frequency
-#define CENTER_FREQ 88480000
 #define CARRIER_OFFSET 20000
 
 #define TUNER_BW 200000
