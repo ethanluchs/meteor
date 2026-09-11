@@ -5,16 +5,15 @@
 #include <stdlib.h>
 #include <time.h>
 
-#define SAMPLE_RATE 2048000
+#define SAMPLE_RATE 250000
 #define CENTER_FREQ 88500000
-#define BUF_BYTES 16384 /* 8192 IQ pairs == ~4 ms per block @ 2.048 Msps */
+#define BUF_BYTES 16384
 
 /* detector tuning knobs */
-static const float THRESH_DB =
-    6.0f;                          /* dB above baseline that counts as a hit */
-static const float ALPHA = 0.001f; /* baseline EWMA, applied PER BLOCK */
-static const int MIN_BLOCKS = 5;   /* consecutive hot blocks before reporting */
-static const int WARMUP_BLOCKS = 200; /* ~0.8 s of settling before arming */
+static const float THRESH_DB = 6.0f;
+static const float ALPHA = 0.001f;
+static const int MIN_BLOCKS = 5;
+static const int WARMUP_BLOCKS = 200;
 
 static int check(const char *what, int r) {
   if (r < 0)
@@ -33,19 +32,8 @@ int main(void) {
   check("set_sample_rate", rtlsdr_set_sample_rate(dev, SAMPLE_RATE));
   check("set_center_freq", rtlsdr_set_center_freq(dev, CENTER_FREQ));
   check("set_tuner_gain_mode", rtlsdr_set_tuner_gain_mode(dev, 1));
+  check("set_tuner_bandwidth", rtlsdr_set_tuner_bandwidth(dev, 200000));
 
-  /* manual gain mode does nothing until you actually pick a gain.
-     ask the tuner what it supports and take the highest. */
-  int ngains = rtlsdr_get_tuner_gains(dev, NULL);
-  if (ngains > 0) {
-    int *gains = malloc((size_t)ngains * sizeof(int));
-    if (gains) {
-      rtlsdr_get_tuner_gains(dev, gains);
-      check("set_tuner_gain", rtlsdr_set_tuner_gain(dev, gains[ngains - 1]));
-      fprintf(stderr, "tuner gain: %.1f dB\n", gains[ngains - 1] / 10.0);
-      free(gains);
-    }
-  }
   rtlsdr_set_agc_mode(dev, 0);
 
   /* confirm the hardware took what you asked for */
