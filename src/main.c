@@ -8,7 +8,7 @@
 #include <time.h>
 
 #define SAMPLE_RATE 250000
-#define CENTER_FREQ 88280000
+#define CENTER_FREQ 54290000
 #define CARRIER_OFFSET 20000
 #define TUNER_BW 200000
 #define TUNER_GAIN 200
