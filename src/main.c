@@ -24,7 +24,7 @@
 #define NOISE_SPAN 900
 
 // roughly ten seconds of frames per summary row
-#define FRAMES_PER_BUCKET 600
+#define FRAMES_PER_BUCKET 60
 
 static const long RUN_SECONDS = 21600;
 
