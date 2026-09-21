@@ -16,28 +16,28 @@
 #define FFT_N 4096
 #define BUF_BYTES (FFT_N * 2)
 
-// wider than the detector's window so we can see where the tone actually
-// sits rather than assuming it lands where we expect
 #define SEARCH_HZ 6000
-
-// bins either side of the search window used to estimate the noise floor
 #define NOISE_SPAN 900
 
-// how many frames before the rolling baseline is trusted
 #define WARMUP_FRAMES 2000
 
-// how far above the rolling baseline (in std devs) counts as elevated
-#define N_SIGMA 4.0f
+// softened from 4.0 -- more permissive, so the live detector actually
+// logs events tonight instead of risking another silent run
+#define N_SIGMA 3.0f
 
-// how slowly the rolling baseline adapts -- small = stable, resistant to
-// being dragged around by a real event while it's happening
 #define BASELINE_ALPHA 0.01f
-
-// minimum sustained duration, in seconds, before an elevated stretch is
-// logged as a real event rather than a single noisy frame
 #define MIN_EVENT_SECONDS 1.0f
 
-static const long RUN_SECONDS = 21600;
+// how many consecutive below-threshold frames tolerated mid-event before
+// actually closing it -- roughly 0.25s at this frame rate
+#define MAX_MISS_FRAMES 15
+
+// write one raw sample to the backup log every Nth frame -- keeps the
+// file a sane size over 12 hours while still fine enough to re-derive
+// events later at whatever threshold looks right in hindsight
+#define RAW_LOG_EVERY_N_FRAMES 10
+
+static const long RUN_SECONDS = 43200; // 12 hours
 
 static int check(const char *what, int r) {
   if (r < 0)
@@ -73,7 +73,6 @@ int main(void) {
   int hi_bin = carrier_bin + half_window;
   int n_window = hi_bin - lo_bin + 1;
 
-  // frames-per-second, used to translate MIN_EVENT_SECONDS into a frame count
   float frames_per_sec = (float)SAMPLE_RATE / FFT_N;
   int min_event_frames = (int)lrintf(MIN_EVENT_SECONDS * frames_per_sec);
   if (min_event_frames < 1)
@@ -83,8 +82,9 @@ int main(void) {
           rtlsdr_get_center_freq(dev), rtlsdr_get_tuner_gain(dev) / 10.0);
   fprintf(stderr, "bin=%.2f Hz  window bins %d..%d (%d bins, +/-%d Hz)\n",
           bin_hz, lo_bin, hi_bin, n_window, SEARCH_HZ);
-  fprintf(stderr, "min_event_frames=%d (~%.2f sec at %.1f frames/sec)\n",
-          min_event_frames, MIN_EVENT_SECONDS, frames_per_sec);
+  fprintf(stderr,
+          "N_SIGMA=%.1f  min_event_frames=%d (~%.2f sec)  max_miss_frames=%d\n",
+          N_SIGMA, min_event_frames, MIN_EVENT_SECONDS, MAX_MISS_FRAMES);
 
   fftwf_complex *in = fftwf_alloc_complex(FFT_N);
   fftwf_complex *out = fftwf_alloc_complex(FFT_N);
@@ -98,9 +98,19 @@ int main(void) {
   float *power = malloc(FFT_N * sizeof(float));
   float *scratch = malloc(FFT_N * sizeof(float));
 
-  // histogram of which bin won, accumulated only while an event is open
   long *event_bin_hits = malloc((size_t)n_window * sizeof(long));
   memset(event_bin_hits, 0, (size_t)n_window * sizeof(long));
+
+  // raw backup log -- continuous, independent of the live detector's
+  // verdicts, so a bad threshold tonight doesn't cost you the whole run
+  FILE *raw_log = fopen("raw_snr_log.csv", "w");
+  if (raw_log) {
+    fprintf(raw_log, "unix_time,snr_db,baseline_mean,baseline_std,peak_bin,"
+                     "peak_offset_hz\n");
+  } else {
+    fprintf(stderr,
+            "warning: could not open raw_snr_log.csv, continuing without it\n");
+  }
 
   check("reset_buffer", rtlsdr_reset_buffer(dev));
 
@@ -109,17 +119,16 @@ int main(void) {
   time_t start = time(NULL);
   long frame_count = 0;
 
-  // rolling baseline of snr_db
   int baseline_initialized = 0;
   float baseline_mean = 0.0f;
   float baseline_var = 0.0f;
 
-  // active-event tracking
   int in_event = 0;
   long event_frames = 0;
   float event_peak_snr = 0.0f;
   int event_peak_bin = 0;
   time_t event_start_time = 0;
+  int miss_streak = 0;
 
   printf("start_iso,end_iso,duration_s,frames,peak_snr,peak_offset_hz,"
          "dominant_bin,dominant_offset_hz,dominant_fraction\n");
@@ -144,8 +153,6 @@ int main(void) {
     for (int k = 0; k < FFT_N; k++)
       power[k] = out[k][0] * out[k][0] + out[k][1] * out[k][1];
 
-    // noise floor from bins flanking the window, so the IF filter rolloff
-    // at the band edges cannot drag the estimate down
     int n_noise = 0;
     for (int k = carrier_bin - NOISE_SPAN; k <= carrier_bin + NOISE_SPAN; k++) {
       if (k < 0 || k >= FFT_N)
@@ -160,8 +167,6 @@ int main(void) {
     float peak = 0.0f;
     int peak_bin = lo_bin;
     for (int k = lo_bin; k <= hi_bin; k++) {
-      // >= rather than > so a flat/tied noise floor doesn't systematically
-      // favor lo_bin every time -- ties now go to the last bin scanned
       if (power[k] >= peak) {
         peak = power[k];
         peak_bin = k;
@@ -171,10 +176,6 @@ int main(void) {
     float snr_db = 10.0f * log10f((peak + 1e-12f) / (noise + 1e-12f));
     frame_count++;
 
-    // update the rolling baseline unconditionally, every frame, regardless
-    // of whether we're currently inside a candidate event -- alpha is small
-    // enough that a real event barely moves it, but it still lets the
-    // baseline track genuine long-term drift in the noise floor
     if (!baseline_initialized) {
       baseline_mean = snr_db;
       baseline_var = 0.0f;
@@ -188,11 +189,20 @@ int main(void) {
     float baseline_std = sqrtf(baseline_var);
     float threshold = baseline_mean + N_SIGMA * baseline_std;
 
+    // continuous raw backup, independent of whatever the live detector
+    // decides -- this is what lets you re-tune the threshold in post
+    // without needing to rerun overnight again
+    if (raw_log && (frame_count % RAW_LOG_EVERY_N_FRAMES == 0)) {
+      float peak_offset_raw = (peak_bin - carrier_bin) * bin_hz;
+      fprintf(raw_log, "%ld,%.2f,%.2f,%.3f,%d,%+.0f\n", (long)time(NULL),
+              snr_db, baseline_mean, baseline_std, peak_bin, peak_offset_raw);
+    }
+
     int elevated = (frame_count > WARMUP_FRAMES) && (snr_db > threshold);
 
     if (elevated) {
+      miss_streak = 0;
       if (!in_event) {
-        // starting a brand new candidate event
         in_event = 1;
         event_frames = 0;
         event_peak_snr = 0.0f;
@@ -207,37 +217,44 @@ int main(void) {
         event_peak_bin = peak_bin;
       }
     } else if (in_event) {
-      // the elevated stretch just ended -- decide whether it was long
-      // enough to count as a real event, then log and reset either way
-      if (event_frames >= min_event_frames) {
-        time_t event_end_time = time(NULL);
-        long best_hits = 0;
-        int best_idx = 0;
-        for (int k = 0; k < n_window; k++) {
-          if (event_bin_hits[k] > best_hits) {
-            best_hits = event_bin_hits[k];
-            best_idx = k;
+      // not elevated this frame, but mid-event -- tolerate a short gap
+      // rather than closing immediately, since real events are noisy
+      // frame-to-frame even while genuinely still happening
+      miss_streak++;
+      if (miss_streak > MAX_MISS_FRAMES) {
+        if (event_frames >= min_event_frames) {
+          time_t event_end_time = time(NULL);
+          long best_hits = 0;
+          int best_idx = 0;
+          for (int k = 0; k < n_window; k++) {
+            if (event_bin_hits[k] > best_hits) {
+              best_hits = event_bin_hits[k];
+              best_idx = k;
+            }
           }
+          int dominant_bin = lo_bin + best_idx;
+          float dominant_offset = (dominant_bin - carrier_bin) * bin_hz;
+          float duration_s = (float)event_frames / frames_per_sec;
+          float dominant_fraction = (float)best_hits / (float)event_frames;
+          float peak_offset = (event_peak_bin - carrier_bin) * bin_hz;
+
+          struct tm tm_start, tm_end;
+          char iso_start[32], iso_end[32];
+          localtime_r(&event_start_time, &tm_start);
+          localtime_r(&event_end_time, &tm_end);
+          strftime(iso_start, sizeof(iso_start), "%Y-%m-%dT%H:%M:%S",
+                   &tm_start);
+          strftime(iso_end, sizeof(iso_end), "%Y-%m-%dT%H:%M:%S", &tm_end);
+
+          printf("%s,%s,%.2f,%ld,%.2f,%+.0f,%d,%+.0f,%.4f\n", iso_start,
+                 iso_end, duration_s, event_frames, event_peak_snr, peak_offset,
+                 dominant_bin, dominant_offset, dominant_fraction);
         }
-        int dominant_bin = lo_bin + best_idx;
-        float dominant_offset = (dominant_bin - carrier_bin) * bin_hz;
-        float duration_s = (float)event_frames / frames_per_sec;
-        float dominant_fraction = (float)best_hits / (float)event_frames;
-        float peak_offset = (event_peak_bin - carrier_bin) * bin_hz;
-
-        struct tm tm_start, tm_end;
-        char iso_start[32], iso_end[32];
-        localtime_r(&event_start_time, &tm_start);
-        localtime_r(&event_end_time, &tm_end);
-        strftime(iso_start, sizeof(iso_start), "%Y-%m-%dT%H:%M:%S", &tm_start);
-        strftime(iso_end, sizeof(iso_end), "%Y-%m-%dT%H:%M:%S", &tm_end);
-
-        printf("%s,%s,%.2f,%ld,%.2f,%+.0f,%d,%+.0f,%.4f\n", iso_start, iso_end,
-               duration_s, event_frames, event_peak_snr, peak_offset,
-               dominant_bin, dominant_offset, dominant_fraction);
+        in_event = 0;
+        event_frames = 0;
+        miss_streak = 0;
       }
-      in_event = 0;
-      event_frames = 0;
+      // else: still within grace period, event stays open
     }
   }
 
@@ -250,6 +267,8 @@ int main(void) {
   free(power);
   free(scratch);
   free(event_bin_hits);
+  if (raw_log)
+    fclose(raw_log);
   rtlsdr_close(dev);
   return 0;
 }
