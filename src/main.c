@@ -23,8 +23,19 @@
 // bins either side of the search window used to estimate the noise floor
 #define NOISE_SPAN 900
 
-// roughly ten seconds of frames per summary row
-#define FRAMES_PER_BUCKET 60
+// how many frames before the rolling baseline is trusted
+#define WARMUP_FRAMES 2000
+
+// how far above the rolling baseline (in std devs) counts as elevated
+#define N_SIGMA 4.0f
+
+// how slowly the rolling baseline adapts -- small = stable, resistant to
+// being dragged around by a real event while it's happening
+#define BASELINE_ALPHA 0.01f
+
+// minimum sustained duration, in seconds, before an elevated stretch is
+// logged as a real event rather than a single noisy frame
+#define MIN_EVENT_SECONDS 1.0f
 
 static const long RUN_SECONDS = 21600;
 
@@ -62,10 +73,18 @@ int main(void) {
   int hi_bin = carrier_bin + half_window;
   int n_window = hi_bin - lo_bin + 1;
 
+  // frames-per-second, used to translate MIN_EVENT_SECONDS into a frame count
+  float frames_per_sec = (float)SAMPLE_RATE / FFT_N;
+  int min_event_frames = (int)lrintf(MIN_EVENT_SECONDS * frames_per_sec);
+  if (min_event_frames < 1)
+    min_event_frames = 1;
+
   fprintf(stderr, "rate=%u freq=%u gain=%.1f dB\n", rtlsdr_get_sample_rate(dev),
           rtlsdr_get_center_freq(dev), rtlsdr_get_tuner_gain(dev) / 10.0);
   fprintf(stderr, "bin=%.2f Hz  window bins %d..%d (%d bins, +/-%d Hz)\n",
           bin_hz, lo_bin, hi_bin, n_window, SEARCH_HZ);
+  fprintf(stderr, "min_event_frames=%d (~%.2f sec at %.1f frames/sec)\n",
+          min_event_frames, MIN_EVENT_SECONDS, frames_per_sec);
 
   fftwf_complex *in = fftwf_alloc_complex(FFT_N);
   fftwf_complex *out = fftwf_alloc_complex(FFT_N);
@@ -79,23 +98,31 @@ int main(void) {
   float *power = malloc(FFT_N * sizeof(float));
   float *scratch = malloc(FFT_N * sizeof(float));
 
-  // per bucket accumulators
-  float *snr_samples = malloc(FRAMES_PER_BUCKET * sizeof(float));
-  float *noise_samples = malloc(FRAMES_PER_BUCKET * sizeof(float));
-  long *bin_hits = malloc((size_t)n_window * sizeof(long));
+  // histogram of which bin won, accumulated only while an event is open
+  long *event_bin_hits = malloc((size_t)n_window * sizeof(long));
+  memset(event_bin_hits, 0, (size_t)n_window * sizeof(long));
 
   check("reset_buffer", rtlsdr_reset_buffer(dev));
 
   uint8_t buf[BUF_BYTES];
   int n_read = 0;
   time_t start = time(NULL);
-  int in_bucket = 0;
-  long total_frames = 0;
+  long frame_count = 0;
 
-  memset(bin_hits, 0, (size_t)n_window * sizeof(long));
+  // rolling baseline of snr_db
+  int baseline_initialized = 0;
+  float baseline_mean = 0.0f;
+  float baseline_var = 0.0f;
 
-  printf("unix_time,iso_time,frames,noise_db,snr_median,snr_p95,snr_max,"
-         "mode_bin,mode_offset_hz,mode_fraction,clip_pct\n");
+  // active-event tracking
+  int in_event = 0;
+  long event_frames = 0;
+  float event_peak_snr = 0.0f;
+  int event_peak_bin = 0;
+  time_t event_start_time = 0;
+
+  printf("start_iso,end_iso,duration_s,frames,peak_snr,peak_offset_hz,"
+         "dominant_bin,dominant_offset_hz,dominant_fraction\n");
 
   while (time(NULL) - start < RUN_SECONDS) {
     if (rtlsdr_read_sync(dev, buf, sizeof(buf), &n_read) != 0) {
@@ -105,14 +132,11 @@ int main(void) {
     if (n_read < BUF_BYTES)
       continue;
 
-    long clipped = 0;
     for (int i = 0; i < FFT_N; i++) {
-      uint8_t bi = buf[2 * i];
-      uint8_t bq = buf[2 * i + 1];
-      if (bi <= 1 || bi >= 254 || bq <= 1 || bq >= 254)
-        clipped++;
-      in[i][0] = ((float)bi - 127.5f) * window[i];
-      in[i][1] = ((float)bq - 127.5f) * window[i];
+      float bi = (float)buf[2 * i] - 127.5f;
+      float bq = (float)buf[2 * i + 1] - 127.5f;
+      in[i][0] = bi * window[i];
+      in[i][1] = bq * window[i];
     }
 
     fftwf_execute(plan);
@@ -136,58 +160,88 @@ int main(void) {
     float peak = 0.0f;
     int peak_bin = lo_bin;
     for (int k = lo_bin; k <= hi_bin; k++) {
-      if (power[k] > peak) {
+      // >= rather than > so a flat/tied noise floor doesn't systematically
+      // favor lo_bin every time -- ties now go to the last bin scanned
+      if (power[k] >= peak) {
         peak = power[k];
         peak_bin = k;
       }
     }
 
-    snr_samples[in_bucket] = 10.0f * log10f((peak + 1e-12f) / (noise + 1e-12f));
-    noise_samples[in_bucket] = 10.0f * log10f(noise + 1e-12f);
-    bin_hits[peak_bin - lo_bin]++;
-    in_bucket++;
-    total_frames++;
+    float snr_db = 10.0f * log10f((peak + 1e-12f) / (noise + 1e-12f));
+    frame_count++;
 
-    if (in_bucket < FRAMES_PER_BUCKET)
-      continue;
-
-    // find the bin that won most often this bucket
-    long best_hits = 0;
-    int best_idx = 0;
-    for (int k = 0; k < n_window; k++) {
-      if (bin_hits[k] > best_hits) {
-        best_hits = bin_hits[k];
-        best_idx = k;
-      }
+    // update the rolling baseline unconditionally, every frame, regardless
+    // of whether we're currently inside a candidate event -- alpha is small
+    // enough that a real event barely moves it, but it still lets the
+    // baseline track genuine long-term drift in the noise floor
+    if (!baseline_initialized) {
+      baseline_mean = snr_db;
+      baseline_var = 0.0f;
+      baseline_initialized = 1;
+    } else {
+      float diff = snr_db - baseline_mean;
+      baseline_mean += BASELINE_ALPHA * diff;
+      baseline_var = (1.0f - BASELINE_ALPHA) *
+                     (baseline_var + BASELINE_ALPHA * diff * diff);
     }
+    float baseline_std = sqrtf(baseline_var);
+    float threshold = baseline_mean + N_SIGMA * baseline_std;
 
-    float noise_med;
-    memcpy(scratch, noise_samples, (size_t)in_bucket * sizeof(float));
-    qsort(scratch, (size_t)in_bucket, sizeof(float), cmp_float);
-    noise_med = scratch[in_bucket / 2];
+    int elevated = (frame_count > WARMUP_FRAMES) && (snr_db > threshold);
 
-    memcpy(scratch, snr_samples, (size_t)in_bucket * sizeof(float));
-    qsort(scratch, (size_t)in_bucket, sizeof(float), cmp_float);
-    float snr_med = scratch[in_bucket / 2];
-    float snr_p95 = scratch[(int)(in_bucket * 0.95f)];
-    float snr_max = scratch[in_bucket - 1];
+    if (elevated) {
+      if (!in_event) {
+        // starting a brand new candidate event
+        in_event = 1;
+        event_frames = 0;
+        event_peak_snr = 0.0f;
+        event_peak_bin = peak_bin;
+        event_start_time = time(NULL);
+        memset(event_bin_hits, 0, (size_t)n_window * sizeof(long));
+      }
+      event_frames++;
+      event_bin_hits[peak_bin - lo_bin]++;
+      if (snr_db > event_peak_snr) {
+        event_peak_snr = snr_db;
+        event_peak_bin = peak_bin;
+      }
+    } else if (in_event) {
+      // the elevated stretch just ended -- decide whether it was long
+      // enough to count as a real event, then log and reset either way
+      if (event_frames >= min_event_frames) {
+        time_t event_end_time = time(NULL);
+        long best_hits = 0;
+        int best_idx = 0;
+        for (int k = 0; k < n_window; k++) {
+          if (event_bin_hits[k] > best_hits) {
+            best_hits = event_bin_hits[k];
+            best_idx = k;
+          }
+        }
+        int dominant_bin = lo_bin + best_idx;
+        float dominant_offset = (dominant_bin - carrier_bin) * bin_hz;
+        float duration_s = (float)event_frames / frames_per_sec;
+        float dominant_fraction = (float)best_hits / (float)event_frames;
+        float peak_offset = (event_peak_bin - carrier_bin) * bin_hz;
 
-    time_t now = time(NULL);
-    struct tm tmv;
-    localtime_r(&now, &tmv);
-    char iso[32];
-    strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%S", &tmv);
+        struct tm tm_start, tm_end;
+        char iso_start[32], iso_end[32];
+        localtime_r(&event_start_time, &tm_start);
+        localtime_r(&event_end_time, &tm_end);
+        strftime(iso_start, sizeof(iso_start), "%Y-%m-%dT%H:%M:%S", &tm_start);
+        strftime(iso_end, sizeof(iso_end), "%Y-%m-%dT%H:%M:%S", &tm_end);
 
-    printf("%ld,%s,%d,%.2f,%.2f,%.2f,%.2f,%d,%+.0f,%.4f,%.3f\n", (long)now, iso,
-           in_bucket, noise_med, snr_med, snr_p95, snr_max, lo_bin + best_idx,
-           (lo_bin + best_idx - carrier_bin) * bin_hz,
-           (double)best_hits / in_bucket, 100.0 * (double)clipped / FFT_N);
-
-    in_bucket = 0;
-    memset(bin_hits, 0, (size_t)n_window * sizeof(long));
+        printf("%s,%s,%.2f,%ld,%.2f,%+.0f,%d,%+.0f,%.4f\n", iso_start, iso_end,
+               duration_s, event_frames, event_peak_snr, peak_offset,
+               dominant_bin, dominant_offset, dominant_fraction);
+      }
+      in_event = 0;
+      event_frames = 0;
+    }
   }
 
-  fprintf(stderr, "done, %ld frames\n", total_frames);
+  fprintf(stderr, "done, %ld frames\n", frame_count);
 
   fftwf_destroy_plan(plan);
   fftwf_free(in);
@@ -195,9 +249,7 @@ int main(void) {
   free(window);
   free(power);
   free(scratch);
-  free(snr_samples);
-  free(noise_samples);
-  free(bin_hits);
+  free(event_bin_hits);
   rtlsdr_close(dev);
   return 0;
 }
