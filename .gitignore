@@ -9,3 +9,4 @@ node_modules/
 fftw.wisdom
 detector/meteor_detect
 .env
+detector/meteor_detect
