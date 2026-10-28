@@ -1,0 +1,21 @@
+Found Rafael Micro R820T tuner
+Exact sample rate is: 250000.000414 Hz
+[R82XX] PLL not locked!
+[rf ] 54.2900 MHz center, 250000 sps, gain 49.6 dB
+[cfg] nominal bin 328, search 230..426 (197 bins), 61.035 frames/s, 61.035 Hz/bin
+[cal] calibrating 120 s (cal-only mode)...
+Allocating 15 zero-copy buffers
+[cal] 7324 frames over 120.0 s
+[cal] top 8 bins:
+[cal]   bin  237   -5554.2 Hz  0.0078  (1.5x uniform)
+[cal]   bin  244   -5127.0 Hz  0.0078  (1.5x uniform)
+[cal]   bin  290   -2319.3 Hz  0.0071  (1.4x uniform)
+[cal]   bin  348   +1220.7 Hz  0.0071  (1.4x uniform)
+[cal]   bin  269   -3601.1 Hz  0.0070  (1.4x uniform)
+[cal]   bin  242   -5249.0 Hz  0.0068  (1.3x uniform)
+[cal]   bin  408   +4882.8 Hz  0.0068  (1.3x uniform)
+[cal]   bin  289   -2380.4 Hz  0.0066  (1.3x uniform)
+[cal] carrier bin 237, offset -5554.2 Hz from nominal bin 328
+[cal] share 0.0078 vs uniform 0.0051 = 1.5x   p0(+/-1) = 0.0183
+[cal] WARNING: not beating a random bin. Check tuning and antenna before trusting anything downstream.
+[cal] WARNING: winner is -5554 Hz off nominal. That is 102.3 ppm at the target frequency, which is far beyond a TCXO's spec. Suspect a spur; rerun with the antenna disconnected and compare.

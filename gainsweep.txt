@@ -1,0 +1,25 @@
+=== gain 49.6 dB ===
+[cal] carrier bin 326, offset -122.1 Hz from nominal bin 328
+[cal] share 0.0222 vs uniform 0.0051 = 4.4x   p0(+/-1) = 0.0382
+=== gain 42.1 dB ===
+[cal] carrier bin 326, offset -122.1 Hz from nominal bin 328
+[cal] share 0.0218 vs uniform 0.0051 = 4.3x   p0(+/-1) = 0.0331
+=== gain 36.4 dB ===
+[cal] carrier bin 319, offset -549.3 Hz from nominal bin 328
+[cal] share 0.0204 vs uniform 0.0051 = 4.0x   p0(+/-1) = 0.0422
+[cal] WARNING: winner is -549 Hz off nominal. That is 10.1 ppm at the target frequency, which is far beyond a TCXO's spec. Suspect a spur; rerun with the antenna disconnected and compare.
+=== gain 29.7 dB ===
+[cal] carrier bin 326, offset -122.1 Hz from nominal bin 328
+[cal] share 0.0178 vs uniform 0.0051 = 3.5x   p0(+/-1) = 0.0317
+=== gain 22.9 dB ===
+[cal] carrier bin 318, offset -610.4 Hz from nominal bin 328
+[cal] share 0.0189 vs uniform 0.0051 = 3.7x   p0(+/-1) = 0.0386
+[cal] WARNING: winner is -610 Hz off nominal. That is 11.2 ppm at the target frequency, which is far beyond a TCXO's spec. Suspect a spur; rerun with the antenna disconnected and compare.
+=== gain 16.6 dB ===
+[cal] carrier bin 326, offset -122.1 Hz from nominal bin 328
+[cal] share 0.0102 vs uniform 0.0051 = 2.0x   p0(+/-1) = 0.0233
+=== gain 8.7 dB ===
+[cal] carrier bin 231, offset -5920.4 Hz from nominal bin 328
+[cal] share 0.0087 vs uniform 0.0051 = 1.7x   p0(+/-1) = 0.0222
+[cal] WARNING: not beating a random bin. Check tuning and antenna before trusting anything downstream.
+[cal] WARNING: winner is -5920 Hz off nominal. That is 109.0 ppm at the target frequency, which is far beyond a TCXO's spec. Suspect a spur; rerun with the antenna disconnected and compare.
